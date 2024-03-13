@@ -1,0 +1,884 @@
+---
+title: "Chicago Housing Price Segmentation & Determinants"
+author: "Jason Tran & Hao Nguyen"
+date: "2023-12-16"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 3
+    theme: flatly
+    code_folding: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# set directory: to local folder
+setwd("C:/Users/nthao/OneDrive/Desktop/Back Up Files/Chicago Housing Price Segmentation & Determinants")
+```
+
+
+# Introduction
+
+The dynamics of housing price are a subject of unpredictability. More specifically, there is a complex interplay of various factors contributing to the final market price of a individual property as well as influencing the housing market at large. Regarding Chicago city,the Institute for Housing Studies at Depaul University has identified that the city housing market is currently facing 3 main challenges: loss of affordable rental supply, rising costs for new and existing homeowners, and increasing housing needs of older adults. As such, this report would attempt to achieve 2 main objectives in order to help supporting Chicago policy markers: determine main factors contributing to change in housing price, and segment the Chicago housing markets. 
+
+
+### Data Sources Overview
+
+We use 2 data sources, we note that the metadata has the descriptions of all relevant variables and is included in the Appendix section.
+
+1. Cook County Housing Price Index 
+
+- Source: Institute for Housing Studies at DePaul University.
+
+- Description: This dataset contains information on housing prices across all community areas in Chicago city between Q1 1997 and Q2 2023, offering a comprehensive view of the housing market trends. The dataset contains 4 sheet of information being: 
+    - Summary information: overview information of submarket housing price being change since 2000, median sales price 2022 Q3 - 2023 Q2 (current), etc.   
+    - Quarterly Index Results: relative housing price of every quarter year of all submarkets compare to that of Q1 2000. 
+    - Sumarket Definitions: information regarding boundaries of submarket, being which CAs are fully within, majority within, and partially within the boundary of the submarket. 
+    - Sumarket Annual Sample Size: the number of sample size the Institution used to estimated the information year over year for every sub-market. 
+
+- Variables: Median housing prices per community area per quarter of every year (from 2017 to 2022). The variables are estimated using other variables in the dataset.  
+
+- Usage: The housing price data will serve as the dependent variable in our analysis, against which the impact of various independent variables will be measured.
+
+- Reference: Institute for Housing Studies - DePaul University. (n.d.). Cook County House Pric Index. Cook County House Price Index.https://price-index.housingstudies.org/
+
+2. Community Data Snapshots (including cvs datasets and Chicago community areas' PDF reports)
+
+- Source: Chicago Metropolitan Agency for Planning (CMAP). 
+
+- Description: This dataset encompasses a range of economic and demographic variables from various Chicago community areas, offering a detailed view of local conditions and trends spanning six years (2017-2022).
+
+- Variables: there are 6 main categories of variables: Population and Households, Housing Characteristics, Transportation, Employment, Land Use, Change Over Time. Furthermore, each category of variables contain different group of variables with each variables group have from 1 to dozen of variables. For example, the Population and Households category contains General Population Characteristics group which have Total Population variables, Total Households variable, etc. We recommend accessing the a snapshot of a community area directly to understand detailed description of the variable.  
+
+- Usage: These variables will be used to understand the micro-level economic and demographic factors affecting housing prices in specific Chicago communities.
+
+- Reference: Community Data snapshots Raw data (2014 - 2022). (n.d.). https://datahub.cmap.illinois.gov/maps/2a0b0316dc2c4ecfa40a171c635503f8/about
+
+### Ethical Consideration & Stakeholders
+
+We believe that this report concerns with 3 main ethical considerations: Data Ownership and Privacy, Data Ownership and Usage, and Community and Individual Welfare. In addition, we believe that there are 4 main groups of stakeholders: the Chicago Community Areas (CAs) Residents, Chicago Policy Makers and Urban Planners, Academic and research community, and the General public.
+
+# Data Import, Cleaning, and Manipulation 
+
+Our analysis is conducted in R studio, leveraging these packages: tidyverse, caret, factoextra, leaps, glmnet, randomForest, partykit, openxlsx, janitor, tibble, magrittr, purrr, plotly, corrplot, rgl, and scales. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Load necessary libraries
+library(tidyverse)
+library(caret)
+library(factoextra)
+library(leaps)
+library(glmnet)
+library(randomForest)
+library(partykit)
+library(openxlsx)
+library(janitor)
+library(tibble)
+library(magrittr)
+library(purrr)
+library(plotly)
+library(corrplot)
+library(rgl)
+library(scales)
+library(readxl)
+library(knitr)
+library(kableExtra)
+
+```
+
+### Import the data
+
+Independent variables: We first import our independent variables dataset from CMAP, which contains information regarding a range of economic and demographic variables from various Chicago CAs between 2017 to 2022 from Community Data Snapshots dataset. We access and download these datasets into our local devices. We then access these datasets using R:  
+
+```{r message=FALSE, warning=FALSE}
+# Read the data (filter out columns with na values) and merge them together 
+file1 <- read_csv("dataset/2017.csv") %>% select(where(~ all(!is.na(.))))
+file2 <- read_csv("dataset/2018.csv") %>% select(where(~ all(!is.na(.))))
+file3 <- read_csv("dataset/2019.csv") %>% select(where(~ all(!is.na(.))))
+file4 <- read_csv("dataset/2020.csv") %>% select(where(~ all(!is.na(.))))
+file5 <- read_csv("dataset/2021.csv") %>% select(where(~ all(!is.na(.))))
+file6 <- read_csv("dataset/2022.csv") %>% select(where(~ all(!is.na(.))))
+```
+
+Dependent variables: We then import our dependent variables dataset from Institute for Housing Studies at DePaul University, which contains information on housing prices across all sub-markets (each sub-market contains fully some CAs) in Chicago city between Q1 1997 and Q2 2023, offering a comprehensive view of the housing market trends. We access and download the dataset into our local devices. We then access the dataset using R: 
+
+```{r}
+# access original data
+path <- "Dataset/2023_q2_price_index_data.xlsx"
+sheets <- openxlsx::getSheetNames(path) 
+housing_dataset <- lapply(sheets, openxlsx::read.xlsx, xlsxFile=path) 
+```
+
+Since the dependent dataset comes in the form of an excel files with multiple sheets, thus, we create 1 dataset associated with each of these sheets. 
+
+```{r}
+# assigning names to original data sheets
+names(housing_dataset) <- sheets
+
+## Summary sheet
+summary_info <- subset(housing_dataset$Summary, select = c(-1)) %>% 
+  # set CA as row names
+  column_to_rownames(var = names(.)[1]) %>% 
+  # remove aggregate data for the cook county, the city, and the suburb
+  slice(1:(n() - 3))
+
+## Quarterly index result sheet
+index <- housing_dataset$Quarterly_Index_Results %>% 
+  # set column names
+  row_to_names(row_number = 1) %>%
+  # set row names
+  remove_rownames() %>% 
+  column_to_rownames(var = names(.)[1]) %>% 
+  # convert to numeric data types
+  mutate(across(where(is.character), ~ as.numeric(.))) %>% 
+  # Convert from range 0 to 100 into 0 to 1. 
+  mutate(across(everything(), ~ .x / 100)) %>% 
+  # remove aggregate data for the cook county, the city, and the suburb
+  subset(select = -c(1:3))
+
+## Submarket_Definitions sheet
+Submarket_Definition <- subset(housing_dataset$Submarket_Definitions, select = c(2:3)) %>% 
+  # remove NA values 
+  na.omit() %>% 
+  # set CA as row names
+  column_to_rownames(var = names(.)[1])  
+
+## Submarket_Annual_Sample_Size sheet
+Submarket_Annual_Sample_Size <- housing_dataset$Submarket_Annual_Sample_Size %>% 
+  # remove aggregate data for the whole city
+  select(-ncol(.)) %>% 
+  slice(1:(n() - 1)) %>% 
+  # use CA as column names
+  row_to_names(row_number = 1) %>% 
+  # set row names
+  remove_rownames() %>% 
+  {
+    rownames(.) <- .[[1]]
+    .[-1]
+  }
+```
+
+### Data Cleaning
+
+Independent variables: We filter out variables that do not exist in all years and merge all independent data set dataframes. Thus we have: 
+
+```{r}
+# Identify common columns for merging
+common_cols <- Reduce(intersect, list(names(file1), names(file2), names(file3), names(file4), names(file5), names(file6)))
+
+# Subset Data Frames to Common Columns & Arrange GEOG as the First Column:
+file1_common <- file1[, common_cols] %>% select(GEOG, everything())
+file2_common <- file2[, common_cols] %>% select(GEOG, everything())
+file3_common <- file3[, common_cols] %>% select(GEOG, everything())
+file4_common <- file4[, common_cols] %>% select(GEOG, everything())
+file5_common <- file5[, common_cols] %>% select(GEOG, everything())
+file6_common <- file6[, common_cols] %>% select(GEOG, everything())
+
+# Merge all datasets together
+housing_data <- rbind(file1_common, file2_common, file3_common, 
+                           file4_common, file5_common, file6_common)
+
+housing_data$Year <- as.factor(housing_data$Year) # change years to factors
+```
+
+Dependent variables: Within the Cook County Housing Price Index dataset, we use the summary information sheet first to estimate the median housing price for each sub-market for each quarter of every years since Q1 1997 to W2 2023. 
+
+```{r}
+# 2000 Q1 price by multiply change from 2000 and current median sale price.
+summary_info$`2000_price` <- summary_info$Change.since.2000 * summary_info$`Median.Sales.Price.2022.Q3.-.2023.Q2`
+
+# calculate the price data for each sub-market for each quarter years. 
+submarket_price <- as.matrix(index) %*% diag(summary_info$`2000_price`) %>% 
+  set_colnames(colnames(index)) %>% as.data.frame()
+```
+
+Given the price data for each sub-market since Q1 1997 to Q2 2023 and each sub-market contains fully some CAs, we determine the median housing price for each CA between Q1 1997 to Q2 2023. For example, given CA A lies fully within sub-market B, as such, the estimated housing price in all time stamps of B will be that of the A.  
+
+```{r}
+# create a dataframe contains all the CA within each sub-market with each CA being a datapoint. 
+CA_within <- Submarket_Definition %>%
+  # create row name index
+  rownames_to_column(var = "Sub-Market") %>%
+  # seperate out each CA. 
+  separate_rows(`Municipalities.or.Chicago.Community.Areas.Entirely.Within*`, sep = ",") %>%
+  # Group by each row name index
+  group_by(`Sub-Market`) %>%
+  # create each CA name being each datapoint. 
+  mutate(row_id = row_number()) %>%
+  pivot_wider(names_from = row_id, values_from = `Municipalities.or.Chicago.Community.Areas.Entirely.Within*`, names_prefix = "CA_within_") %>% 
+  # transpose the dataset
+  t() %>% 
+  # make the colnames
+  row_to_names(row_number = 1) %>% 
+  # change to dataframe type
+  as.data.frame()
+
+# create a CA price dataset
+# Create an empty list to store datapoint
+CA_price <- list()
+# Loop through each sub-market price data
+for (market in colnames(submarket_price)){
+  # loop through each CA name
+  for (CA in CA_within[[market]]){
+    # skip NA value
+    if (is.na(CA)){next}
+    # add the sub-market price vector to the CA price vector that lies entirely within 
+    CA_price[[`CA`]] <- submarket_price[[market]]
+  }
+}
+
+# Update the CA price dataframe column names
+CA_price <- data.frame(CA_price)
+colnames(CA_price) <- gsub("X\\.", "", colnames(CA_price))
+colnames(CA_price) <- gsub("\\.", " ", colnames(CA_price))
+
+# Update the CA price dataframe row names
+rownames(CA_price) <- rownames(submarket_price)
+# Convert rownames to a column named 'YearQuarter'
+CA_price <- CA_price %>% 
+  rownames_to_column(var = "YearQuarter")
+```
+
+In our later analysis, our time unit will be that of every year since 2017 to 2022. Hence, for the `CA_price` dataframe that have median house price for each quarter year, we take the average of all quarter for each year as annual datapoints. 
+
+```{r}
+# Convert quarter price data into annual price data by taking the average of quarters data points. 
+price_data <- CA_price%>%
+  select(-starts_with("Unnamed")) %>%
+  gather(key = "Location", value = "Price", -YearQuarter) %>%
+  separate(YearQuarter, into = c("Year", "Quarter"), sep = 4) %>%
+  mutate(Year = as.numeric(Year)) %>%
+  filter(Year %in% 2017:2022) %>%
+  group_by(Year, Location) %>%
+  summarize(AveragePrice = mean(Price, na.rm = TRUE), .groups = 'drop')
+```
+
+
+### Data Merging and Manipulation
+
+1. Data Merging: We merge the independent and dependent variables dataset using name of CAs that existed in both datasets as the key variable. It should be noted that CA all have unique names. 
+
+```{r}
+# Only keep GEOG values that are present in both datasets
+matching_geog <- intersect(housing_data$GEOG, price_data$Location)
+
+# Filter the price data for matching GEOG values
+price_data_filtered <- filter(price_data, Location %in% matching_geog)
+price_data_filtered$Year <- as.factor(price_data_filtered$Year)
+
+# Merge the datasets and filter out unnecessary variables 
+clean_data <- housing_data %>% filter(GEOG %in% matching_geog) %>%
+  left_join(price_data_filtered, by = c("Year", "GEOG" = "Location"))
+
+```
+
+Our final `clean_data` dataset is a comprehensive dataset of both dependent, being median house price data, and independent variables, being various CA's features. 
+
+2. Data Manipulation
+
+We remove 'isolated' variables, being variables that belongs in a group with missing variables. For example, the `Age Cohorts` group contains 3 variables in our final dataset: `A20_34`, `A35_49`, `A50_64`. Thus, the group is currently missing variables for showing number of residents have age less than 20 or larger than 64. Hence, we remove these variables. In addition, we remove variables that we could not infer a definition from the original dataset. 
+
+```{r}
+# remove isolated variables
+clean_data <- clean_data %>% subset(select = -c(A20_34, A35_49, A50_64, POP_16OV, POP_25OV, HS, BACH, HU_SNG_DET, HU_SNG_ATT,HU_2UN, HU_3_4UN, HV_LT_150K, HV_150_300K, HV_300_500K, HV_GT_500K, MED_HV, TOT_EMP_RES))
+```
+
+From the employment category variables, we are interested only in the average aggregate of the employment figures rather than specific number of employments figure in each top industry or locations due to ethical consideration. As such, we create average employment of top 5 most employed sectors of the CA residents variable, `RES_NAICS_AVG`; and average employment of top 5 most employed sectors in CA boundary, `WORK_NAICS_AVG`. We then process to remove specific variables.   
+
+```{r}
+# Create New variables for average employment of top 5 most employed sectors of CA residents and average employment of top 5 most employed sectors in CA boundary. 
+
+# average employment of top 5 most employed sectors of CA residents
+clean_data <- clean_data %>% 
+  rowwise() %>% 
+  mutate(RES_NAICS_AVG = sum(RES_NAICS1_COUNT, RES_NAICS2_COUNT, RES_NAICS3_COUNT, RES_NAICS4_COUNT, RES_NAICS5_COUNT, na.rm = T)/5)
+
+# we are interested in the average value of the employment of top 5 most employed sectors of residents only.. Thus we remove all its components. 
+clean_data <- clean_data %>% 
+  subset(select = -c(RES_NAICS1_COUNT, RES_NAICS2_COUNT, RES_NAICS3_COUNT, RES_NAICS4_COUNT, RES_NAICS5_COUNT))
+
+# average employment of top 5 most employed sectors in CA boundary. 
+clean_data <- clean_data %>% 
+  rowwise() %>% 
+  mutate(WORK_NAICS_AVG = sum(WORK_NAICS1_COUNT, WORK_NAICS2_COUNT, WORK_NAICS3_COUNT, WORK_NAICS4_COUNT, WORK_NAICS5_COUNT, na.rm = T)/5)
+
+# we are interested in the average value of the employment of top 5 most employed sectors in CA boundary only. Thus we remove all its components. 
+clean_data <- clean_data %>% 
+  subset(select = -c(WORK_NAICS1_COUNT, WORK_NAICS2_COUNT, WORK_NAICS3_COUNT, WORK_NAICS4_COUNT, WORK_NAICS5_COUNT))
+
+# Remove resident_city_count & work_city_count variables
+clean_data <- clean_data %>% 
+  subset(select = -c(RES_CITY1_COUNT, RES_CITY2_COUNT, RES_CITY3_COUNT, RES_CITY4_COUNT, RES_CITY5_COUNT, WORK_CITY1_COUNT, WORK_CITY2_COUNT, WORK_CITY3_COUNT, WORK_CITY4_COUNT, WORK_CITY5_COUNT))
+```
+
+Since our analysis focuses only in numerical variables, thus, we remove all categorical variables except for the geo-code location and the year.
+
+```{r}
+# remove categorical variables (all variables that are non-numeric or non-integer) except for the geo-code location and the year. 
+clean_data <- clean_data[sapply(clean_data, function(x) is.numeric(x) || is.integer(x)) | colnames(clean_data) %in% c("GEOG", "Year")]
+
+numerical_data <- clean_data %>%  # Take only numerical value
+  select(-c(GEOG,Year))
+
+head(clean_data)
+```
+
+# Methodology
+
+## Exploratory Data Analysis
+
+### Housing Price Distribution
+
+We would like to first would like the distribution of housing price in the Chicago market. More specifically, we visualize the distribution of housing prices in Chicago between 2017 to 2022. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Define a list of years
+unique_years <- unique(clean_data$Year)
+
+# Define a color palette
+colors <- RColorBrewer::brewer.pal(length(unique_years), "Set2")
+
+# Initialize the plot
+prices <- plot_ly()
+
+# Determine an appropriate bin width
+# This is something you might want to tweak to get the look you want
+bin_width <- 200000  
+
+# Add a trace for each year when changing the slider
+for (i in seq_along(unique_years)) {
+    year <- unique_years[i]
+    prices <- prices %>% add_trace(
+        data = subset(clean_data, Year == year),
+        x = ~AveragePrice,
+        type = 'histogram',
+        visible = i == 1,  # Only the first trace is visible initially
+        name = as.character(year),
+        marker = list(color = colors[i]),
+        xbins = list(start = min(clean_data$AveragePrice), end = max(clean_data$AveragePrice), size = bin_width)  # Setting bin width here
+    )
+}
+
+# Define the steps for the slider
+steps <- lapply(unique_years, function(year, index) {
+    list(
+        method = "restyle",
+        args = list("visible", lapply(unique_years, function(y) y == year)),
+        label = as.character(year)
+    )
+}, index = seq_along(unique_years))
+
+# Add the slider and update layout
+prices <- prices %>% layout(
+    sliders = list(
+        list(
+            active = 0,
+            currentvalue = list(prefix = "Year: "),
+            steps = steps
+        )
+    ),
+    title = "Distribution of Housing Prices Over Years",
+    xaxis = list(
+        title = "Average Price",
+        # Set the range if you want to focus on a specific portion of the data
+        range = c(min(clean_data$AveragePrice), max(clean_data$AveragePrice)) 
+    ),
+    yaxis = list(title = "Frequency"),
+    hovermode = 'closest',
+    font = list(size = 12),
+    bargap = 0.1  # Adjust the gap between bars if needed
+)
+
+# Show the plot
+prices
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Identify the median and average housing price for 2017 & 2022. 
+# Prep the data for 2017
+price_2017 <- clean_data %>%  
+  subset(select = c(Year, AveragePrice)) %>% 
+  filter(Year == 2017)
+
+# Prep the data for 2017
+price_2022 <- clean_data %>%  
+  subset(select = c(Year, AveragePrice)) %>% 
+  filter(Year == 2022)
+
+# average price
+avg_2017 <- mean(price_2017$AveragePrice)
+avg_2022 <- mean(price_2022$AveragePrice)
+
+# median price
+med_2017 <- median(price_2017$AveragePrice)
+med_2022 <- median(price_2022$AveragePrice)
+
+```
+
+From the graph we see that the distribution of housing price in Chicago is right skewed for all years during the study periods. In addition, we show that the median and average housing price in 2017 to 2022 are `r dollar(med_2017)`, `r dollar(med_2022)`; and `r dollar(avg_2017)`, `r dollar(avg_2022)` respectively. As such, we infer the housing price in Chicago has been growing during the 5 years period. In addition, we see that the increase in prices are not uniform throughout the city, due to the median housing price only increases by `r 100*round((med_2022-med_2017)/med_2017,2)`%, while the average price increases by 
+`r 100*round((avg_2022-avg_2017)/avg_2017,2)`% in the city. Hence, we infer lower than median and average price housing units have seen a larger increase in price compare to that of higher than median and average price housing units. 
+
+### Correlation Matrix 
+
+In determining the impact of different CA's features to housing price, we could not ignore the impact of such features onto each other. Thus, we have the correlation matrix including all variables that have a strong absolute correlation value of more than 0.75 with another variables. Thus, we have:  
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Calculate the correlation matrix
+corr_matrix <- cor(numerical_data)
+
+# Set a high threshold for correlation
+threshold <- 0.75
+corr_matrix[abs(corr_matrix) < threshold] <- NA  # Set correlations below threshold to NA
+
+# Function to check if all non-NA values are 1
+all_one_or_na <- function(x) all(x[!is.na(x)] == 1)
+
+# Remove columns that contain only 1 and NA
+corr_matrix <- corr_matrix[, !apply(corr_matrix, 2, all_one_or_na)]
+
+# Remove rows that contain only 1 and NA
+corr_matrix <- corr_matrix[!apply(corr_matrix, 1, all_one_or_na), ]
+
+# Identify variables with at least one significant correlation
+significant_vars <- apply(!is.na(corr_matrix), 1, any)
+
+# Filter out variables without significant correlations
+corr_matrix_filtered <- corr_matrix[significant_vars, significant_vars]
+diag(corr_matrix_filtered) <- NA  # Exclude self-correlations
+
+# Create an interactive heatmap with the filtered matrix
+fig_corr <- plot_ly(x = colnames(corr_matrix_filtered), y = colnames(corr_matrix_filtered), z = corr_matrix_filtered, 
+                    type = "heatmap", colorscale = "Plasma", 
+                    zmin = threshold, zmax = 1) %>%
+            layout(title = "Filtered Correlation Matrix (Absolute Corr >= 0.75)",
+                   xaxis = list(title = "Variables", tickangle = 45, tickfont = list(size = 10)),
+                   yaxis = list(title = "Variables", tickangle = -45, tickfont = list(size = 10)),
+                   margin = list(l = 100, r = 100, t = 100, b = 100))
+
+
+fig_corr
+```
+
+Given our independent dataset having `r length(numerical_data)` variables, there are `r nrow(corr_matrix_filtered)` variables that have at least 1 strong absolute correlation value with another variable. As such, since the majority of variables (around `r round(100*nrow(corr_matrix_filtered)/length(numerical_data),2)`%) have at least 1 strong absolute correlation value with another variable. This indicates that CA's features may have strong influences to each other. Moreover, due to the amount of strong correlation values between variables, we infer that there exists evidence of multicolinearity between independent variables. 
+
+Henceforth, we perform variable selection with the purpose of reducing multicolinearity. More specifically, our method involves performing hierarchical clustering to determine clusters of highly correlated variables and remove all variables within those clusters except for 1 variable. This guarantee no elimination of variables with high correlation but are not in the same cluster/group, thus, decreasing model multicolinearity without increasing bias. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Calculate the initial correlation matrix
+corr_matrix <- cor(numerical_data)
+
+# Perform hierarchical clustering
+abs_corr_matrix <- abs(corr_matrix)
+diag(abs_corr_matrix) <- 0  # Exclude self-correlations
+hc <- hclust(as.dist(1 - abs_corr_matrix), method = "average")
+
+# Identify clusters of highly correlated variables (threshold: 0.9)
+high_corr_threshold <- 0.9
+clusters <- cutree(hc, h = 1 - high_corr_threshold)
+
+# Select one variable from each cluster
+vars_to_keep <- tapply(names(clusters), clusters, function(x) x[1])
+
+# Update  numerical dataset by keeping only the selected variables
+filtered_numerical_data <- numerical_data[, vars_to_keep, drop = FALSE]
+```
+
+Hence, our new filtered correlation matrix being
+
+```{r}
+# Recalculate the correlation matrix with the filtered data
+filtered_corr_matrix <- cor(filtered_numerical_data)
+
+# Set a threshold for displaying significant correlations
+threshold <- 0.75
+filtered_corr_matrix[abs(filtered_corr_matrix) < threshold] <- NA
+diag(filtered_corr_matrix) <- NA  # Exclude self-correlations
+
+# Remove columns that contain only 1 and NA
+filtered_corr_matrix <- filtered_corr_matrix[, !apply(filtered_corr_matrix, 2, all_one_or_na)]
+
+# Remove rows that contain only 1 and NA
+filtered_corr_matrix <- filtered_corr_matrix[!apply(filtered_corr_matrix, 1, all_one_or_na), ]
+
+# Create an interactive heatmap with the filtered correlation matrix
+fig_corr <- plot_ly(x = colnames(filtered_corr_matrix), y = colnames(filtered_corr_matrix), z = filtered_corr_matrix, 
+                    type = "heatmap", colorscale = "Plasma", 
+                    zmin = threshold, zmax = 1) %>%
+            layout(title = "Filtered Correlation Matrix (Absolute Corr >= 0.75)",
+                   xaxis = list(title = "Variables", tickangle = 45, tickfont = list(size = 10)),
+                   yaxis = list(title = "Variables", tickangle = -45, tickfont = list(size = 10)),
+                   margin = list(l = 100, r = 100, t = 100, b = 100))
+
+fig_corr
+```
+
+Given variable selection based on initial correlation matrix, we now see that our `filtered_numerical_data` which contains all numerical independent variables after removing highly correlated variables have `r length(filtered_numerical_data)` variables. Of which, there are `r nrow(filtered_corr_matrix)` variables that have at least 1 strong absolute correlation value with another variable. Although, the majority of variables (around `r round(100*nrow(filtered_corr_matrix)/length(filtered_numerical_data),2)`%) still have at least 1 strong absolute correlation value with another variable. We believe that these correlation values do not indicate multicolinearity because variables that are still highly correlated are not of the same cluster/group during hierarchical clustering variable selection process.  
+
+We updated `clean_data` dataframe with filtered numerical variables in `filtered_numerical_data` dataframe. 
+
+```{r}
+# Remove numerical_data subset out of clean_data 
+columns_to_keep <- setdiff(names(clean_data), names(numerical_data)) # Identify columns in clean_data that are not in numerical_data
+clean_data <- clean_data[columns_to_keep] # Subset clean_data to keep only the columns that are not in numerical_data
+
+# Add filted_numerical_data into clean_data
+clean_data <- cbind(clean_data, filtered_numerical_data)
+```
+
+
+## Analysis & Findings
+
+### Model Overviews
+
+We will proceed with the following statistical analysis and model buildings: 
+
+1. Lasso Regression: Since main dataset, `clean_data`, still contains `r length(filtered_numerical_data)`. As such, we perform Lasso Regression. The methodology is used to perform variable selection and regularization by imposing a penalty on the absolute size of the coefficients. This can help in continue identifying the most significant predictors for our dataset.
+
+2. Principle Component Analysis (PCA) & K-means Clustering: In order to segmenting the housing market in Chicago, we proceed with performing PCA then applying K-means Clustering into the PCA results. More specifically, we perform PCA to reduce the dimensions of the data but still contain majority of information. The dimension reduction is achieved by identifying the principal components (PCs), which are uncorrelated linear combinations of the original variables that captured maximum variance. After determine the PCs, we apply K-Means Clustering to segment the dataset into distinct groups. Henceforth, K-means allows use to determine different segments of the Chicago Community Areas housing market and reveals intrinsic groupings among variables based on underlying structure.   
+
+3. Decision Tree Regression: In order to determine main factors that change Chicago housing price, we apply Decision Tree Regression. We note that Decision tree method can be visualized and are relatively easy to understand. This is because the methodology provides clear decision rules for how inputs' impact target variable. In addition, the methodology can also handle both quantitative, qualitative predictor variables, and missing data. 
+
+###  Lasso Regression 
+
+We perform Lasso Regression to continue variable selection and increase accuracy. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Data Preparation for Lasso Regression
+# 'Average_Price' is your dependent variable
+target <- filtered_numerical_data$AveragePrice
+features <- filtered_numerical_data %>% select_if(is.numeric) %>% select(-AveragePrice)
+# Data preparation into x and y
+x <- as.matrix(features)
+y <- target
+set.seed(123)
+# Lasso regression with best lambda
+lasso_model <- glmnet(x, y, alpha=1)
+plot(lasso_model)
+
+```
+
+ 
+
+The resulting Lasso's coefficient path plot provides visual representation of model's coefficients as a function of L1 norm, reflecting the cumulative magnitude of the coefficients adjusted by the Lasso penalty, λ. We notice that given increasing λ values, coefficients' values either stay constant at 0 or change from 0 to non-zero values. We continue with identifying the optimal λ value that minimize Mean Squared Error (MSE) value.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# To find the best lambda
+cv_model <- cv.glmnet(x, y, alpha=1)
+best_lambda <- cv_model$lambda.min
+min_mse <- cv_model$lambda.1se
+
+# Fit the LASSO model using the best lambda value
+lasso_best <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+
+print(cv_model)
+print(lasso_best)
+```
+
+Our results indicate an optimal λ of `r best_lambda` with cross validation showing that the minimum MSE of model being `r min_mse`. Overall, the model explains `r round(100*lasso_best$dev.ratio,2)`% of deviance in the dependent variable. In addition, since Lasso Regression possesses variable selection property by pushing coefficients of some variables to 0. Thus, we have a list of some non-zero coefficients: 
+
+```{r}
+# Extract the coefficients
+coefficients <- coef(lasso_best, s = best_lambda)
+
+# Coefficients are returned in a sparse matrix; convert to regular matrix for easier handling
+coefficients <- as.matrix(coefficients)
+
+# Identify non-zero coefficients (i.e., variables retained in the model)
+non_zero_coefficients <- coefficients[coefficients != 0, , drop = FALSE]
+
+# Convert into matrix form for significant variables 
+non_zero_coefficients <- as.matrix(non_zero_coefficients)
+
+# Extract the names of the variables with non-zero coefficients (excluding intercept)
+selected_features <- colnames(x)[which(non_zero_coefficients[-1,] != 0)]
+
+# Subset the original dataset to include only final features for PCA
+final_filtered_data <- numerical_data[selected_features]
+
+# show some non-zero coefficients
+print(non_zero_coefficients, max = 6)
+
+```
+
+We notice after Lasso Regression results, we identify `r length(non_zero_coefficients)` non_zero_coefficients. Thus, Lasso Regression reduce number of numerical variables from `r length(filtered_numerical_data)` to `r length(non_zero_coefficients)`. Thus, we update our main dataset, `clean_data`. 
+
+```{r}
+# Remove numerical_data subset out of clean_data 
+columns_to_keep <- setdiff(names(clean_data), names(final_filtered_data)) # Identify columns in clean_data that are not in final_filtered_data
+clean_data <- clean_data[columns_to_keep] # Subset clean_data to keep only the columns that are not in final_filtered_data
+
+# Add final_filtered_data into clean_data
+clean_data <- cbind(clean_data, final_filtered_data)
+```
+
+### Principle Component Analysis & K-Means Clustering
+
+In order to determine different housing market segment in Chicago, we would implement PCA and K-Means Clustering. We first use PCA for our data. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+final_filtered_data$AveragePrice <- clean_data$AveragePrice
+# Perform PCA on the dataset with selected features
+pca_result <- prcomp(final_filtered_data, scale. = TRUE, center=TRUE)
+
+# Explained Variance
+summary(pca_result)
+
+# Scree plot to visualize variance explained by each principal component
+fviz_eig(pca_result)
+
+```
+
+From the PCA results, we see that 90% of variance is explained by the first 10 PCs. As such, we believe implementing K-Means Clustering with these 10 PCs would maintain accuracy and increase interpretability of clusters. Thus, we implement K-Means Clustering with only these 10 PCs. 
+
+### K-Means Clustering
+
+We implement K-Means Clustering for 2 purposes: determine optimal number of segments for the housing market and obtain housing market segments characteristics.  
+
+In order to determine the optimal number of clusters, we utilize the Elbow method because of the methodology evaluating the within-cluster sum of squares and the separation distance between clusters. We should note that identification of appropriate number of clusters is crucial as it influences the accuracy  of market segmentation and the interpretability of the results.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Extract the scores for the first 10 principal components according to the Scree plot
+pca_scores <- pca_result$x[, 1:10]
+
+# Determine the optimal number of clusters (using the elbow method)
+set.seed(123)
+wss <- sapply(1:15, function(k){kmeans(pca_scores, k, nstart = 10)$tot.withinss})
+plot(1:15, wss, type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K", ylab="Total within-clusters sum of squares")
+
+# Perform K-means clustering with the chosen number of clusters
+
+# Replace 'k' with the chosen number of clusters based on the elbow method
+
+kmeans_result <- kmeans(pca_scores, centers = 3, nstart = 25)
+
+```
+
+From the plot above, it's clear that the optimal number of clusters lie between 3 to 6 because of Total within clusters sum of squares value showing signs of flatten or remaining stagnant after. Thus, we proceed with the optimal number of clusters being 3. We decide on the smallest possible value of optimal clusters to minimize model's complexity and increase the change of correspondence with low, middle, high tiers categories for increase economics interpretability of the housing market. As such, we proceed to assign observations' cluster classification into `final_filtered_data` dataset. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Assign the clusters back into the full original dataset (with year)
+final_filtered_data $Clusters<-kmeans_result$cluster # assign the clusters into the full filtered dataset with year and location
+final_filtered_data$Clusters <- as.factor(final_filtered_data$Clusters)
+final_filtered_data$GEOG <- clean_data$GEOG
+final_filtered_data$Year <-clean_data$Year
+# Summary of avg housing price for each cluster
+summary_table <- final_filtered_data %>% group_by(Clusters) %>% 
+  summarise(
+    Count = n(),
+    Mean = mean(AveragePrice, na.rm = TRUE),
+    SD = sd(AveragePrice, na.rm = TRUE),
+    Min = min(AveragePrice, na.rm = TRUE),
+    Median = median(AveragePrice, na.rm = TRUE),
+    Max = max(AveragePrice, na.rm = TRUE)
+  ) 
+
+
+print(summary_table)
+```
+
+
+From the table results, we could reasonably device the housing market in Chicago into 3 categories: low, middle, and high segment. This is due to the drastic differences in average housing price between each segments with low, high, and middle segment having the average housing price of `r dollar(summary_table$Mean)` respectively. In particular, we tested the difference in market segments by dive into segments' total population characteristics. We believe that higher population areas tend to have high demand for housing and thus would drive housing price up. As such, we decice to highlight only CAs that belong to the upper 80 percentile and those in the lower 20 percentile in terms of total population. 
+
+```{r}
+# Define a color palette for the clusters
+num_clusters <- length(unique(final_filtered_data$Clusters))
+cluster_colors <- RColorBrewer::brewer.pal(num_clusters, "Set1")
+
+# Get the unique years in the dataset
+unique_years <- sort(unique(final_filtered_data$Year))
+
+# Initialize the plot
+scatter_plot <- plot_ly()
+# Add a trace for each cluster (not each year and cluster combination)
+for (j in seq_along(unique(final_filtered_data$Clusters))) {
+  # Initialize with the first year's data for the cluster
+  cluster_data <- filter(final_filtered_data, Year == unique_years[1], Clusters == as.factor(j))
+  
+  # Determine the quantiles for labeling
+  top_bottom_quantile <- quantile(final_filtered_data$TOT_POP, probs = c(0.2, 0.8))
+  final_filtered_data$Label <- ifelse(final_filtered_data$TOT_POP > top_bottom_quantile[2] | 
+                               final_filtered_data$TOT_POP < top_bottom_quantile[1], 
+                               as.character(final_filtered_data$GEOG), 
+                               NA)
+
+  scatter_plot <- scatter_plot %>% add_trace(
+    data = final_filtered_data,
+    x = ~TOT_POP,
+    y = ~AveragePrice,
+    type = 'scatter',
+    mode = 'markers+text',
+    name = paste("Cluster", j),
+    marker = list(color = cluster_colors[j]),
+    text = ~Label,
+    textposition = 'top center',
+    hoverinfo = 'text+x+y',
+    showlegend = TRUE
+  )
+}
+
+# Create the steps for the slider
+steps <- vector("list", length(unique_years))
+for (i in seq_along(unique_years)) {
+  steps[[i]] <- list(
+    method = "restyle",
+    args = list(
+      list(
+        "x" = lapply(seq_along(unique(final_filtered_data$Clusters)), 
+                     function(j) filter(final_filtered_data, Year == unique_years[i], Clusters == as.factor(j))$TOT_POP),
+        "y" = lapply(seq_along(unique(final_filtered_data$Clusters)), 
+                     function(j) filter(final_filtered_data, Year == unique_years[i], Clusters == as.factor(j))$AveragePrice),
+        "text" = lapply(seq_along(unique(final_filtered_data$Clusters)),
+                        function(j) {
+                          year_cluster_data <- filter(final_filtered_data, Year == unique_years[i], Clusters == as.factor(j))
+                          top_bottom_quantile <- quantile(year_cluster_data$TOT_POP, probs = c(0.2, 0.8))
+                          ifelse(year_cluster_data$TOT_POP > top_bottom_quantile[2] | 
+                                 year_cluster_data$TOT_POP < top_bottom_quantile[1], 
+                                 as.character(year_cluster_data$GEOG), 
+                                 NA)
+                        })
+      )
+    ),
+    label = as.character(unique_years[i])
+  )
+}
+
+# Add the slider and update the layout
+scatter_plot <- scatter_plot %>% layout(
+  sliders = list(
+    list(
+      active = 0,
+      currentvalue = list(prefix = "Year: "),
+      steps = steps
+    )
+  ),
+  title = "Clustering of Average Housing Prices by Population Over Years",
+  xaxis = list(title = "Total Population"),
+  yaxis = list(title = "Average Housing Price"),
+  hovermode = 'closest'
+)
+
+# Show the plot
+scatter_plot
+```
+
+
+
+The plot illustrates that from 2017 to 2022, Cluster 2 which represents the highest average housing prices segment also encompasses areas with larger populations, with West Town and Rogers Park being prominent examples. Conversely, Cluster 3, characterized by moderate housing prices, consistently correlates with regions of lower population density, notably including Washington Heights and West Pullman. Meanwhile, Cluster 1, which is associated with the lowest average housing prices, exhibits a broad spectrum of population totals, indicating a diverse range of population densities within this cluster with locations such as South Lanwdale or Portage Park. 
+
+### Random Forest Regression 
+
+Finally, we utilize random forest regression in order to determine the most significance variables in impacting housing price. 
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+control <- trainControl(method = "cv", number = 10) # train using 10-fold cross validation
+# Define the tuning grid
+tune_grid <- expand.grid(mtry = seq(2, length(selected_features), by = 5))
+# Subset the data
+forest_data <- final_filtered_data %>% 
+  select(-c(Label, Year, GEOG))
+set.seed(123)  # for reproducibility
+
+# Train the model
+rf_model_tuned <- train(AveragePrice ~ ., 
+                        data = forest_data, 
+                        method = "rf", 
+                        trControl = control,
+                        tuneGrid = tune_grid)
+
+
+# Print the model summary
+print(rf_model_tuned)
+
+# Plot the model performance
+plot(rf_model_tuned)
+```
+
+We implement Cross-validation to determine the optimal number of randomly selected predictors that minimize RMSE. Our results show that at `r max(rf_model_tuned$results$mtry)` randomly selected predictors, the RMSE reaches a minimum of `r min(rf_model_tuned$results$RMSE)`. In addition, we notice that the Random Forest model shows a moderately high R² value at `r max(rf_model_tuned$results$mtry)` randomly selected predictors being `r round(100*max(rf_model_tuned$results$Rsquared),2)`%, thus, the model explained `r round(100*max(rf_model_tuned$results$Rsquared),2)`% of the variability in the response variable. However, it should be noted that since the model used `r max(rf_model_tuned$results$mtry)` out of total `r ncol(final_filtered_data)` numerical variables, henceforth, we infer a risk of model's over-fitting. Therefore, we further investigate model's performance by looking at out-of-sample error rates. In addition, we determine the top 10 most significance variables from the model: 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123)  # For reproducibility
+optimal_rf_model <- randomForest(AveragePrice ~ ., data = clean_data, mtry = 42, ntree = 200) # fit the full model with optimal mtry 
+
+plot(optimal_rf_model) # plot the full model performance
+
+# Get the important values in the RF model (node purity)
+importance_values <- importance(optimal_rf_model)
+
+
+# Create a data frame for plotting
+importance_df <- data.frame(Variable = rownames(importance_values), 
+                            Importance = importance_values[, "IncNodePurity"])
+
+# Ordering variables by importance
+importance_df <- importance_df[order(-importance_df$Importance),]
+
+# Filter the top 10 most significant variables
+top_10 <- importance_df %>%
+  top_n(10, Importance) %>%
+  arrange(desc(Importance))
+
+# Create the ggplot plot
+ggplot(top_10, aes(x = reorder(Variable, Importance), y = Importance, fill = Variable)) +
+  geom_bar(stat = "identity", color = "black", size = 0.5) +
+  coord_flip() +  # Flip coordinates for horizontal layout
+  theme_minimal() +
+  labs(title = "Top 10 Variable Importance in Random Forest Model", 
+       x = "Variable", 
+       y = "Increase in Node Purity") +
+  theme(axis.text.y = element_text(size = 12),  # Adjust text size on the y-axis
+        axis.title.x = element_blank(),  # Remove x-axis label
+        legend.position = "none")   # Remove the legend
+
+```
+
+Based on the error plot, it appears that the model quickly levels off in performance given increasing number of trees. The results suggest that approximately 50 trees is adequate in achiving optimal error rate, further supporting our results of `r max(rf_model_tuned$results$mtry)` randomly selected predictors. 
+
+Moreover, the model determines that top 10 most importance variables in predicting average housing price. We notice that the most importance variables are related to transportation categories, being: `WALK_BIKE`, `TRANSperc`, and `TRANSIT`. In addition, other variables also possesses significance being: `Mfperc` and `WORK_AT_HOME`. We should note that the importance scores is derived from node impurity during tree construction with increasing importance scores meaning improving node purity. 
+
+# Conclusions & Policy Recommendations
+
+### Determinants of Housing Price
+
+The variable importance plot provides insights into the factors that play a crucial role in determining housing prices. It appears that the variable 'WALK_BIKE' holds significance suggesting that amenities promoting walking and biking have a major influence on housing values. This could be indicative of a rising trend towards awareness and a preference for convenience and well being among Chicago residents.Additionally 'TRANSperc' and 'TRANSIT' are also identified as variables emphasizing the importance of transportation infrastructure when evaluating housing prices. This aligns with the idea that easy access to transport can boost property appeal and subsequently drive up housing prices. Moreover, they are related to racial and land-use demographics which emphasize the importance of these economic variables. For instance, multi-family and single-family demographics are ranked quite high in importance, indicating that the mix of multi-family and single-family homes in an area may reflect broader trends in housing demand and urban development patterns. The variable 'INC_GT_150' highlights how economic prosperity affects housing prices, indicating that neighborhoods with higher income households are associated with expensive real estate. Moreover the significance of the 'VACANT' variable underscores how supply impacts pricing dynamics as areas with vacant homes may experience different market conditions compared to those with fewer vacancies. 
+
+### Housing Price Clustering Analysis
+
+Given these findings from the table and example clustering plot, a recommendation for stakeholders and policymakers would be to focus on differentiated strategies for each cluster. For Cluster 2, enhancing existing infrastructure and local services could further increase property values, maintaining the high housing prices in these community areas. In Clusters 1 and 3 (with noticeably lower average housing prices), there is an opportunity to develop housing policies that support affordability while also considering interventions to stabilize and increase property values, such as community development projects or incentivizing new local businesses to address the diverse needs of these communities.
+
+
+# Potential Limitations
+
+- Because we are analyzing the Chicago housing market in terms of community areas which assume the ones in the same area had similar housing prices, this could lead to inaccurate assumptions and interpretations. This might overlook the diversity in property types, conditions, and micro-locations within the same community area. The real estate market often has significant variations even within small geographic areas.
+- Risk of overfitting due to small number of data points and high accuracy of the random forest model also exemplify this concern. 
+- Inability to determine the exact impact of the price determinants due to the use of node purity in random forest model instead of using the coefficients of the variables. This makes it challenging to understand the exact influence of each variable on housing prices.
+
+# Appendix
+
+The table below shows a detailed descriptions of variables: 
+
+```{r}
+# Import variables description metadata. 
+Variables_Description_Metadata <- read_excel("Dataset/Variables Description Metadata.xlsx")
+
+# Create a table with caption for variables description. 
+table <- kable(Variables_Description_Metadata, format = "html", caption = "Variable Definitions: Author's creation using CMAP dataset")
+pretty_table <- table %>%
+                kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                              full_width = F)
+
+# Appendix table
+pretty_table
+```
+
+
+
+
